@@ -51,42 +51,36 @@ if uploaded_ct and uploaded_rt:
                     default=roi_names
                 )
                 
-                # Bottone per eseguire analisi
-                if st.button("Esegui Analisi"):
-                    with st.spinner("Calcolo HU per le ROI selezionate..."):
-                        results = []
-                        # fattori di resample usando prima ROI selezionata
-                        sample_mask = rtstruct.get_roi_mask_by_name(roi_selected[0])
-                        factors = (
-                            ct_volume.shape[0] / sample_mask.shape[0],
-                            ct_volume.shape[1] / sample_mask.shape[1],
-                            ct_volume.shape[2] / sample_mask.shape[2]
-                        )
-                        
-                        for roi in roi_selected:
-                            mask = rtstruct.get_roi_mask_by_name(roi)
-                            mask_resampled = zoom(mask.astype(float), factors, order=0).astype(bool)
-                            
-                            if mask_resampled.shape != ct_volume.shape:
-                                st.warning(f"Shape non compatibili per ROI {roi}, saltata.")
-                                continue
-                            
-                            roi_hu = ct_volume[mask_resampled]
-                            if roi_hu.size == 0:
-                                st.warning(f"ROI {roi} vuota: nessun voxel trovato, saltata.")
-                                continue
-                            
-                            results.append({
-                                "ROI": roi,
-                                "Mean_HU": np.mean(roi_hu),
-                                "Std_HU": np.std(roi_hu),
-                                "Min_HU": np.min(roi_hu),
-                                "Max_HU": np.max(roi_hu)
-                            })
-                        
-                        if results:
-                            # Visualizza risultati a video
-                            st.dataframe(results)
-                            st.success("Analisi completata!")
-                        else:
-                            st.warning("Nessun dato valido da analizzare.")
+                results = []
+                # fattori di resample basati sulla prima ROI
+                sample_mask = rtstruct.get_roi_mask_by_name(roi_selected[0])
+                factors = (
+                    ct_volume.shape[0] / sample_mask.shape[0],
+                    ct_volume.shape[1] / sample_mask.shape[1],
+                    ct_volume.shape[2] / sample_mask.shape[2]
+                )
+                
+                for roi in roi_selected:
+                    mask = rtstruct.get_roi_mask_by_name(roi)
+                    mask_resampled = zoom(mask.astype(float), factors, order=0).astype(bool)
+                    
+                    if mask_resampled.shape != ct_volume.shape:
+                        st.warning(f"Shape non compatibili per ROI {roi}, saltata.")
+                        continue
+                    
+                    roi_hu = ct_volume[mask_resampled]
+                    if roi_hu.size == 0:
+                        st.warning(f"ROI {roi} vuota: nessun voxel trovato, saltata.")
+                        continue
+                    
+                    results.append({
+                        "ROI": roi,
+                        "Mean_HU": np.mean(roi_hu),
+                        "Std_HU": np.std(roi_hu)
+                    })
+                
+                if results:
+                    st.dataframe(results)
+                    st.success("Analisi completata!")
+                else:
+                    st.warning("Nessun dato valido da analizzare.")
