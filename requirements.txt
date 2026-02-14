@@ -1,6 +1,5 @@
 streamlit
-rt-utils
 pydicom
 numpy
-pandas
-opencv-python-headless
+rt_utils
+SimpleITK
