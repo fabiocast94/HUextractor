@@ -3,4 +3,4 @@ rt-utils
 pydicom
 numpy
 pandas
-opencv-python
+opencv-python-headless
