@@ -6,67 +6,82 @@ import pydicom
 from rt_utils import RTStructBuilder
 import tempfile
 from scipy.ndimage import zoom
+import shutil
 
 st.set_page_config(page_title="Analisi HU CT+RTSTRUCT", layout="wide")
 st.title("Analisi HU dalle CT e RTSTRUCT")
+
+# 🔹 Controllo OpenCV e rt_utils
+try:
+    import cv2
+except ImportError as e:
+    st.error(f"Errore import: {e}. Assicurati di avere Python 3.11 e opencv-python-headless installato.")
+    st.stop()
+
+# 🔹 Session state
+if "tmpdir" not in st.session_state:
+    st.session_state.tmpdir = tempfile.mkdtemp()
+if "roi_selected" not in st.session_state:
+    st.session_state.roi_selected = []
+if "ct_files" not in st.session_state:
+    st.session_state.ct_files = []
+if "rt_path" not in st.session_state:
+    st.session_state.rt_path = None
+if "roi_names" not in st.session_state:
+    st.session_state.roi_names = []
 
 # 🔹 Caricamento file
 uploaded_ct = st.file_uploader("Carica cartella CT (zip)", type="zip")
 uploaded_rt = st.file_uploader("Carica RTSTRUCT (.dcm)", type="dcm")
 
-# Session state per salvare ROI selezionate e file caricati
-if "roi_selected" not in st.session_state:
-    st.session_state.roi_selected = []
-if "ct_files" not in st.session_state:
-    st.session_state.ct_files = None
-if "rt_path" not in st.session_state:
-    st.session_state.rt_path = None
-
-roi_names = []
-
+# 🔹 Estrazione file solo se caricati
 if uploaded_ct and uploaded_rt:
-    # 🔹 Estrazione solo dei nomi delle ROI senza fare calcoli pesanti
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # salva zip CT temporaneo
-        ct_zip_path = os.path.join(tmpdir, "ct.zip")
-        with open(ct_zip_path, "wb") as f:
-            f.write(uploaded_ct.getbuffer())
-        with zipfile.ZipFile(ct_zip_path, 'r') as zip_ref:
-            zip_ref.extractall(tmpdir)
-        
-        # lista file DICOM CT
-        st.session_state.ct_files = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.endswith(".dcm")]
-        
-        # salva RTSTRUCT
-        st.session_state.rt_path = os.path.join(tmpdir, "rtstruct.dcm")
-        with open(st.session_state.rt_path, "wb") as f:
-            f.write(uploaded_rt.getbuffer())
-        
-        # carica RTSTRUCT solo per leggere ROI names
-        rtstruct = RTStructBuilder.create_from(dicom_series_path=tmpdir, rt_struct_path=st.session_state.rt_path)
-        roi_names = rtstruct.get_roi_names()
+    tmpdir = st.session_state.tmpdir
+    
+    # salva zip CT
+    ct_zip_path = os.path.join(tmpdir, "ct.zip")
+    with open(ct_zip_path, "wb") as f:
+        f.write(uploaded_ct.getbuffer())
+    
+    # estrai zip
+    with zipfile.ZipFile(ct_zip_path, 'r') as zip_ref:
+        zip_ref.extractall(tmpdir)
+    
+    # lista file DICOM CT
+    st.session_state.ct_files = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.endswith(".dcm")]
+    
+    if not st.session_state.ct_files:
+        st.error("Nessun file DICOM trovato nella cartella CT.")
+    
+    # salva RTSTRUCT
+    st.session_state.rt_path = os.path.join(tmpdir, "rtstruct.dcm")
+    with open(st.session_state.rt_path, "wb") as f:
+        f.write(uploaded_rt.getbuffer())
+    
+    # carica RTSTRUCT per leggere solo i nomi delle ROI
+    rtstruct = RTStructBuilder.create_from(dicom_series_path=tmpdir, rt_struct_path=st.session_state.rt_path)
+    st.session_state.roi_names = rtstruct.get_roi_names()
 
 # 🔹 Selezione ROI
-if roi_names:
+if st.session_state.roi_names:
     st.session_state.roi_selected = st.multiselect(
         "Seleziona ROI da analizzare",
-        roi_names,
+        st.session_state.roi_names,
         default=[]
     )
 
-# 🔹 Bottone per eseguire calcolo
+# 🔹 Bottone per avviare analisi
 if st.button("Esegui analisi") and st.session_state.roi_selected:
     if not st.session_state.ct_files or not st.session_state.rt_path:
         st.error("Errore: file CT o RTSTRUCT non disponibili.")
     else:
         with st.spinner("Estrazione dati e calcolo HU..."):
-            # leggi volume CT
+            # Leggi volume CT
             ct_slices = [pydicom.dcmread(f) for f in st.session_state.ct_files]
             ct_slices.sort(key=lambda x: float(getattr(x, "ImagePositionPatient", [0,0,0])[2]))
             ct_volume = np.stack([s.pixel_array * s.RescaleSlope + s.RescaleIntercept for s in ct_slices])
             
-            # carica RTSTRUCT
-            tmpdir = os.path.dirname(st.session_state.rt_path)
+            # Carica RTSTRUCT
             rtstruct = RTStructBuilder.create_from(dicom_series_path=tmpdir, rt_struct_path=st.session_state.rt_path)
             
             results = []
