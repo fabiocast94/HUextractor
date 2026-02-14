@@ -4,3 +4,4 @@ numpy
 rt_utils
 SimpleITK
 scipy
+opencv-python
