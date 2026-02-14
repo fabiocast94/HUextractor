@@ -5,4 +5,3 @@ rt_utils
 SimpleITK
 scipy
 pandas
-opencv-python
