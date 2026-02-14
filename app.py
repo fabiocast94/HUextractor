@@ -13,7 +13,7 @@ import re
 # ======================================
 
 st.title("HU ROI Extractor (Eclipse RTSTRUCT)")
-st.write("Upload uno ZIP con i pazienti DICOM.")
+st.write("Upload uno ZIP con cartelle pazienti DICOM.")
 
 uploaded_file = st.file_uploader(
     "Carica ZIP con cartelle pazienti",
@@ -21,40 +21,44 @@ uploaded_file = st.file_uploader(
 )
 
 # ======================================
-# FUNCTIONS
+# ROI NORMALIZATION
 # ======================================
 
 ROI_RENAME_RULES = {
-    "PTV": ["PTV", "PTV60", "PTV66"],
-    "CTV": "CTV",
-    "GTV": "GTV",
-    "LUNG_L": "LUNG_L",
-    "LUNG_R": "LUNG_R"
+    "PTV": ["PTV", "PTV1", "PTV_BOOST"],
+    "CTV": ["CTV", "CTV1"],
+    "GTV": ["GTV", "GTV_PRIMARY"],
+    "LUNG_L": ["LUNG_L", "LEFT_LUNG"],
+    "LUNG_R": ["LUNG_R", "RIGHT_LUNG"],
+    "HEART": ["HEART", "COR"],
+    "SPINAL_CORD": ["SPINALCORD", "SC", "SPINE"],
+    "ESOPHAGUS": ["ESOPHAGUS", "ESO"]
 }
 
 
 def normalize_roi_name(name):
-    """Normalizza i nomi delle ROI usando regex."""
+    """Restituisce il nome normalizzato della ROI in base a più possibili alias."""
     name_up = name.upper()
-    for key in ROI_RENAME_RULES:
-        if re.search(rf"\b{key}\b", name_up):
-            return ROI_RENAME_RULES[key]
-    return name
+    for normalized, aliases in ROI_RENAME_RULES.items():
+        for alias in aliases:
+            if re.search(rf"\b{alias.upper()}\b", name_up):
+                return normalized
+    return name  # se non matcha nessuno, restituisce il nome originale
 
+# ======================================
+# FUNCTIONS
+# ======================================
 
 def load_ct_hu(ct_folder):
     """Carica CT e restituisce volume in HU."""
     files = [
         pydicom.dcmread(os.path.join(ct_folder, f))
         for f in os.listdir(ct_folder)
-        if not f.startswith(".")
+        if not f.startswith(".") and f.lower().endswith(".dcm")
     ]
-
-    files.sort(key=lambda x: float(getattr(x, "ImagePositionPatient", [0, 0, 0])[2]))
-
+    files.sort(key=lambda x: float(getattr(x, "ImagePositionPatient", [0,0,0])[2]))
     slope = float(getattr(files[0], "RescaleSlope", 1))
     intercept = float(getattr(files[0], "RescaleIntercept", 0))
-
     volume = np.stack([f.pixel_array for f in files], axis=2).astype(np.float32)
     return volume * slope + intercept
 
@@ -71,13 +75,31 @@ def compute_stats(values):
     }
 
 
+def find_ct_folder(patient_path):
+    """Trova la cartella CT all’interno della cartella paziente."""
+    for d in os.listdir(patient_path):
+        d_path = os.path.join(patient_path, d)
+        if os.path.isdir(d_path):
+            if any(f.lower().endswith(".dcm") for f in os.listdir(d_path)):
+                return d_path
+    return None
+
+
+def find_rtstruct(patient_path):
+    """Trova il file RTSTRUCT nella cartella paziente."""
+    for f in os.listdir(patient_path):
+        if "RTSTRUCT" in f.upper() and f.lower().endswith(".dcm"):
+            return os.path.join(patient_path, f)
+    return None
+
+
 def process_patient(patient_path):
     """Elabora un singolo paziente: CT + RTSTRUCT."""
     patient_id = os.path.basename(patient_path)
-    ct_folder = os.path.join(patient_path, "CT")
-    rtstruct_path = os.path.join(patient_path, "RTSTRUCT.dcm")
+    ct_folder = find_ct_folder(patient_path)
+    rtstruct_path = find_rtstruct(patient_path)
 
-    if not (os.path.exists(ct_folder) and os.path.exists(rtstruct_path)):
+    if ct_folder is None or rtstruct_path is None:
         st.warning(f"Paziente {patient_id}: CT o RTSTRUCT mancanti")
         return []
 
@@ -93,18 +115,15 @@ def process_patient(patient_path):
         return []
 
     results = []
-
     for roi in rtstruct.get_roi_names():
         try:
             mask = rtstruct.get_roi_mask_by_name(roi)
             if mask.shape != hu.shape:
                 st.warning(f"Paziente {patient_id}, ROI {roi}: shape mask diversa da CT")
                 continue
-
             roi_hu = hu[mask]
             if roi_hu.size == 0:
                 continue
-
             row = {
                 "Patient": patient_id,
                 "ROI_Original": roi,
@@ -123,16 +142,11 @@ def process_patient(patient_path):
 # ======================================
 
 if uploaded_file:
-
     st.info("Estrazione file ZIP...")
-
     with tempfile.TemporaryDirectory() as tmpdir:
-
         zip_path = os.path.join(tmpdir, "data.zip")
-
         with open(zip_path, "wb") as f:
             f.write(uploaded_file.read())
-
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(tmpdir)
 
@@ -162,10 +176,8 @@ if uploaded_file:
             st.error("Nessun risultato trovato.")
         else:
             st.success("Calcolo completato!")
-
             df = df.sort_values(by=["Patient", "ROI_Normalized"])
             st.dataframe(df)
-
             csv = df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "Download CSV",
