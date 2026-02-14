@@ -12,11 +12,11 @@ import re
 # STREAMLIT UI
 # ======================================
 
-st.title("HU ROI Extractor")
+st.title("HU ROI Extractor (Eclipse RTSTRUCT)")
 st.write("Upload uno ZIP con i pazienti DICOM.")
 
 uploaded_file = st.file_uploader(
-    "Carica DATA.zip",
+    "Carica ZIP con cartelle pazienti",
     type=["zip"]
 )
 
@@ -25,7 +25,7 @@ uploaded_file = st.file_uploader(
 # ======================================
 
 ROI_RENAME_RULES = {
-    "PTV": "PTV",
+    "PTV": ["PTV", "PTV60", "PTV66"],
     "CTV": "CTV",
     "GTV": "GTV",
     "LUNG_L": "LUNG_L",
@@ -136,23 +136,16 @@ if uploaded_file:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(tmpdir)
 
-        # Trova cartella DATA
-        data_root = next(
-            (os.path.join(root, d)
-             for root, dirs, _ in os.walk(tmpdir)
-             for d in dirs if d.upper() == "DATA"),
-            None
-        )
-
-        if data_root is None:
-            st.error("Cartella DATA non trovata nello ZIP.")
-            st.stop()
-
+        # Trova tutte le cartelle paziente nello ZIP
         patients = [
-            os.path.join(data_root, p)
-            for p in os.listdir(data_root)
-            if os.path.isdir(os.path.join(data_root, p))
+            os.path.join(root, d)
+            for root, dirs, _ in os.walk(tmpdir)
+            for d in dirs
         ]
+
+        if len(patients) == 0:
+            st.error("Nessuna cartella paziente trovata nello ZIP.")
+            st.stop()
 
         st.write(f"Trovati {len(patients)} pazienti")
 
