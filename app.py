@@ -12,7 +12,7 @@ import re
 # STREAMLIT UI
 # ======================================
 
-st.title("HU ROI Extractor (Eclipse RTSTRUCT)")
+st.title("HU ROI Extractor")
 st.write("Upload uno ZIP con i pazienti DICOM.")
 
 uploaded_file = st.file_uploader(
