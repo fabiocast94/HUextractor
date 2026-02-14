@@ -6,7 +6,6 @@ import pydicom
 from rt_utils import RTStructBuilder
 import tempfile
 from scipy.ndimage import zoom
-import pandas as pd
 
 st.set_page_config(page_title="Analisi HU CT+RTSTRUCT", layout="wide")
 st.title("Analisi HU dalle CT e RTSTRUCT")
@@ -59,7 +58,7 @@ if uploaded_ct and uploaded_rt:
                     
                     if roi_selected:
                         results = []
-                        # calcolo fattori di resample una sola volta
+                        # calcolo fattori di resample una sola volta usando la prima ROI
                         sample_mask = rtstruct.get_roi_mask_by_name(roi_selected[0])
                         factors = (
                             ct_volume.shape[0] / sample_mask.shape[0],
@@ -83,22 +82,11 @@ if uploaded_ct and uploaded_rt:
                             results.append({
                                 "ROI": roi,
                                 "Mean_HU": np.mean(roi_hu),
-                                "Std_HU": np.std(roi_hu),
-                                "Min_HU": np.min(roi_hu),
-                                "Max_HU": np.max(roi_hu)
+                                "Std_HU": np.std(roi_hu)
                             })
                         
                         if results:
-                            df = pd.DataFrame(results)
-                            st.dataframe(df)
-                            
-                            # generazione CSV scaricabile
-                            csv = df.to_csv(index=False).encode('utf-8')
-                            st.download_button(
-                                "Download CSV",
-                                data=csv,
-                                file_name="HU_results.csv",
-                                mime='text/csv'
-                            )
+                            st.dataframe(results)
+                            st.success("Analisi completata!")
                         else:
-                            st.warning("Nessun dato valido da esportare.")
+                            st.warning("Nessun dato valido da analizzare.")
