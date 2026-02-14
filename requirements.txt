@@ -3,3 +3,4 @@ pydicom
 numpy
 rt_utils
 SimpleITK
+scipy
