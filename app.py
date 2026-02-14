@@ -15,7 +15,6 @@ uploaded_rt = st.file_uploader("Carica RTSTRUCT (.dcm)", type="dcm")
 
 if uploaded_ct and uploaded_rt:
     with st.spinner("Estrazione dati e calcolo HU..."):
-        # crea cartella temporanea
         with tempfile.TemporaryDirectory() as tmpdir:
             # salva zip CT
             ct_zip_path = os.path.join(tmpdir, "ct.zip")
@@ -47,16 +46,24 @@ if uploaded_ct and uploaded_rt:
                 
                 # seleziona ROI disponibile
                 roi_names = rtstruct.get_roi_names()
-                roi_selected = st.selectbox("Seleziona ROI", roi_names)
-                
-                # estrai maschera
-                mask = rtstruct.get_roi_mask_by_name(roi_selected)
-                roi_hu = ct_volume[mask.astype(bool)]
-                
-                # calcoli statistici
-                mean_hu = np.mean(roi_hu)
-                std_hu = np.std(roi_hu)
-                
-                st.success(f"Calcolo completato per ROI: **{roi_selected}**")
-                st.write(f"**Valore medio HU:** {mean_hu:.2f}")
-                st.write(f"**Deviazione standard HU:** {std_hu:.2f}")
+                if not roi_names:
+                    st.error("Nessuna ROI trovata nel RTSTRUCT.")
+                else:
+                    roi_selected = st.selectbox("Seleziona ROI", roi_names)
+                    
+                    # estrai maschera con resample=True
+                    mask = rtstruct.get_roi_mask_by_name(roi_selected, resample=True)
+                    
+                    # controlla compatibilità shape
+                    if mask.shape != ct_volume.shape:
+                        st.error(f"Shape non compatibili: CT {ct_volume.shape}, mask {mask.shape}")
+                    else:
+                        roi_hu = ct_volume[mask.astype(bool)]
+                        if roi_hu.size == 0:
+                            st.warning("ROI selezionata vuota: nessun voxel trovato.")
+                        else:
+                            mean_hu = np.mean(roi_hu)
+                            std_hu = np.std(roi_hu)
+                            st.success(f"Calcolo completato per ROI: **{roi_selected}**")
+                            st.write(f"**Valore medio HU:** {mean_hu:.2f}")
+                            st.write(f"**Deviazione standard HU:** {std_hu:.2f}")
