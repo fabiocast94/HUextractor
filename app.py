@@ -6,7 +6,6 @@ import pydicom
 from rt_utils import RTStructBuilder
 import tempfile
 from scipy.ndimage import zoom
-import pandas as pd
 
 st.set_page_config(page_title="Analisi HU CT+RTSTRUCT", layout="wide")
 st.title("Analisi HU dalle CT e RTSTRUCT")
@@ -86,19 +85,8 @@ if uploaded_ct and uploaded_rt:
                             })
                         
                         if results:
-                            df = pd.DataFrame(results)
-                            st.session_state['df_results'] = df  # salva in session_state
+                            # Visualizza risultati a video
+                            st.dataframe(results)
                             st.success("Analisi completata!")
-                            st.dataframe(df)
                         else:
                             st.warning("Nessun dato valido da analizzare.")
-                
-                # Bottone per scaricare CSV
-                if 'df_results' in st.session_state:
-                    csv = st.session_state['df_results'].to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "Scarica CSV dei risultati",
-                        data=csv,
-                        file_name="HU_results.csv",
-                        mime='text/csv'
-                    )
