@@ -6,6 +6,7 @@ import pydicom
 from rt_utils import RTStructBuilder
 import tempfile
 from scipy.ndimage import zoom
+import pandas as pd
 
 st.set_page_config(page_title="Analisi HU CT+RTSTRUCT", layout="wide")
 st.title("Analisi HU dalle CT e RTSTRUCT")
@@ -45,34 +46,59 @@ if uploaded_ct and uploaded_rt:
                 # carica RTSTRUCT
                 rtstruct = RTStructBuilder.create_from(dicom_series_path=tmpdir, rt_struct_path=rt_path)
                 
-                # seleziona ROI disponibile
+                # seleziona ROI disponibili
                 roi_names = rtstruct.get_roi_names()
                 if not roi_names:
                     st.error("Nessuna ROI trovata nel RTSTRUCT.")
                 else:
-                    roi_selected = st.selectbox("Seleziona ROI", roi_names)
-                    
-                    # estrai maschera senza resample
-                    mask = rtstruct.get_roi_mask_by_name(roi_selected)
-                    
-                    # resample manuale della maschera al volume CT
-                    factors = (
-                        ct_volume.shape[0] / mask.shape[0],
-                        ct_volume.shape[1] / mask.shape[1],
-                        ct_volume.shape[2] / mask.shape[2]
+                    roi_selected = st.multiselect(
+                        "Seleziona ROI da analizzare",
+                        roi_names,
+                        default=roi_names  # default tutte selezionate
                     )
-                    mask_resampled = zoom(mask.astype(float), factors, order=0).astype(bool)
                     
-                    # controllo shape
-                    if mask_resampled.shape != ct_volume.shape:
-                        st.error(f"Shape non compatibili dopo resampling: CT {ct_volume.shape}, mask {mask_resampled.shape}")
-                    else:
-                        roi_hu = ct_volume[mask_resampled]
-                        if roi_hu.size == 0:
-                            st.warning("ROI selezionata vuota: nessun voxel trovato.")
+                    if roi_selected:
+                        results = []
+                        # calcolo fattori di resample una sola volta
+                        sample_mask = rtstruct.get_roi_mask_by_name(roi_selected[0])
+                        factors = (
+                            ct_volume.shape[0] / sample_mask.shape[0],
+                            ct_volume.shape[1] / sample_mask.shape[1],
+                            ct_volume.shape[2] / sample_mask.shape[2]
+                        )
+                        
+                        for roi in roi_selected:
+                            mask = rtstruct.get_roi_mask_by_name(roi)
+                            mask_resampled = zoom(mask.astype(float), factors, order=0).astype(bool)
+                            
+                            if mask_resampled.shape != ct_volume.shape:
+                                st.warning(f"Shape non compatibili per ROI {roi}, saltata.")
+                                continue
+                            
+                            roi_hu = ct_volume[mask_resampled]
+                            if roi_hu.size == 0:
+                                st.warning(f"ROI {roi} vuota: nessun voxel trovato, saltata.")
+                                continue
+                            
+                            results.append({
+                                "ROI": roi,
+                                "Mean_HU": np.mean(roi_hu),
+                                "Std_HU": np.std(roi_hu),
+                                "Min_HU": np.min(roi_hu),
+                                "Max_HU": np.max(roi_hu)
+                            })
+                        
+                        if results:
+                            df = pd.DataFrame(results)
+                            st.dataframe(df)
+                            
+                            # generazione CSV scaricabile
+                            csv = df.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                "Download CSV",
+                                data=csv,
+                                file_name="HU_results.csv",
+                                mime='text/csv'
+                            )
                         else:
-                            mean_hu = np.mean(roi_hu)
-                            std_hu = np.std(roi_hu)
-                            st.success(f"Calcolo completato per ROI: **{roi_selected}**")
-                            st.write(f"**Valore medio HU:** {mean_hu:.2f}")
-                            st.write(f"**Deviazione standard HU:** {std_hu:.2f}")
+                            st.warning("Nessun dato valido da esportare.")
