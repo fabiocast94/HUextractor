@@ -5,6 +5,7 @@ import numpy as np
 import pydicom
 from rt_utils import RTStructBuilder
 import tempfile
+from scipy.ndimage import zoom
 
 st.set_page_config(page_title="Analisi HU CT+RTSTRUCT", layout="wide")
 st.title("Analisi HU dalle CT e RTSTRUCT")
@@ -51,14 +52,22 @@ if uploaded_ct and uploaded_rt:
                 else:
                     roi_selected = st.selectbox("Seleziona ROI", roi_names)
                     
-                    # estrai maschera con resample=True
-                    mask = rtstruct.get_roi_mask_by_name(roi_selected, resample=True)
+                    # estrai maschera senza resample
+                    mask = rtstruct.get_roi_mask_by_name(roi_selected)
                     
-                    # controlla compatibilità shape
-                    if mask.shape != ct_volume.shape:
-                        st.error(f"Shape non compatibili: CT {ct_volume.shape}, mask {mask.shape}")
+                    # resample manuale della maschera al volume CT
+                    factors = (
+                        ct_volume.shape[0] / mask.shape[0],
+                        ct_volume.shape[1] / mask.shape[1],
+                        ct_volume.shape[2] / mask.shape[2]
+                    )
+                    mask_resampled = zoom(mask.astype(float), factors, order=0).astype(bool)
+                    
+                    # controllo shape
+                    if mask_resampled.shape != ct_volume.shape:
+                        st.error(f"Shape non compatibili dopo resampling: CT {ct_volume.shape}, mask {mask_resampled.shape}")
                     else:
-                        roi_hu = ct_volume[mask.astype(bool)]
+                        roi_hu = ct_volume[mask_resampled]
                         if roi_hu.size == 0:
                             st.warning("ROI selezionata vuota: nessun voxel trovato.")
                         else:
