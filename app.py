@@ -35,36 +35,53 @@ ROI_RENAME_RULES = {
     "ESOPHAGUS": ["ESOPHAGUS", "ESO"]
 }
 
-
 def normalize_roi_name(name):
-    """Restituisce il nome normalizzato della ROI in base a più possibili alias."""
     name_up = name.upper()
     for normalized, aliases in ROI_RENAME_RULES.items():
         for alias in aliases:
             if re.search(rf"\b{alias.upper()}\b", name_up):
                 return normalized
-    return name  # se non matcha nessuno, restituisce il nome originale
+    return name
 
 # ======================================
 # FUNCTIONS
 # ======================================
 
 def load_ct_hu(ct_folder):
-    """Carica CT e restituisce volume in HU."""
+    """Carica CT e restituisce volume in HU, gestendo slice mancanti o tag assenti."""
     files = [
         pydicom.dcmread(os.path.join(ct_folder, f))
         for f in os.listdir(ct_folder)
         if not f.startswith(".") and f.lower().endswith(".dcm")
     ]
-    files.sort(key=lambda x: float(getattr(x, "ImagePositionPatient", [0,0,0])[2]))
+    
+    # Ordinamento: prima ImagePositionPatient, se manca InstanceNumber
+    def sort_key(ds):
+        if hasattr(ds, "ImagePositionPatient"):
+            return float(ds.ImagePositionPatient[2])
+        elif hasattr(ds, "InstanceNumber"):
+            return float(ds.InstanceNumber)
+        else:
+            return 0.0
+
+    files.sort(key=sort_key)
+
+    # Controllo slice dimensioni
+    shapes = [f.pixel_array.shape for f in files]
+    if len(set(shapes)) > 1:
+        st.warning(f"Slice CT con dimensioni diverse trovate: {set(shapes)}. Verranno ignorate slice anomale.")
+        # tenere solo le slice con shape più comune
+        from collections import Counter
+        most_common_shape = Counter(shapes).most_common(1)[0][0]
+        files = [f for f in files if f.pixel_array.shape == most_common_shape]
+
     slope = float(getattr(files[0], "RescaleSlope", 1))
     intercept = float(getattr(files[0], "RescaleIntercept", 0))
+
     volume = np.stack([f.pixel_array for f in files], axis=2).astype(np.float32)
     return volume * slope + intercept
 
-
 def compute_stats(values):
-    """Calcola statistiche HU per un array di valori."""
     return {
         "MeanHU": float(np.mean(values)),
         "StdHU": float(np.std(values)),
@@ -74,27 +91,20 @@ def compute_stats(values):
         "VoxelCount": int(len(values))
     }
 
-
 def find_ct_folder(patient_path):
-    """Trova la cartella CT all’interno della cartella paziente."""
     for d in os.listdir(patient_path):
         d_path = os.path.join(patient_path, d)
-        if os.path.isdir(d_path):
-            if any(f.lower().endswith(".dcm") for f in os.listdir(d_path)):
-                return d_path
+        if os.path.isdir(d_path) and any(f.lower().endswith(".dcm") for f in os.listdir(d_path)):
+            return d_path
     return None
 
-
 def find_rtstruct(patient_path):
-    """Trova il file RTSTRUCT nella cartella paziente."""
     for f in os.listdir(patient_path):
         if "RTSTRUCT" in f.upper() and f.lower().endswith(".dcm"):
             return os.path.join(patient_path, f)
     return None
 
-
 def process_patient(patient_path):
-    """Elabora un singolo paziente: CT + RTSTRUCT."""
     patient_id = os.path.basename(patient_path)
     ct_folder = find_ct_folder(patient_path)
     rtstruct_path = find_rtstruct(patient_path)
@@ -119,7 +129,7 @@ def process_patient(patient_path):
         try:
             mask = rtstruct.get_roi_mask_by_name(roi)
             if mask.shape != hu.shape:
-                st.warning(f"Paziente {patient_id}, ROI {roi}: shape mask diversa da CT")
+                st.warning(f"Paziente {patient_id}, ROI {roi}: shape mask {mask.shape} diversa da CT {hu.shape}")
                 continue
             roi_hu = hu[mask]
             if roi_hu.size == 0:
@@ -134,7 +144,6 @@ def process_patient(patient_path):
         except Exception as e:
             st.warning(f"Paziente {patient_id}, ROI {roi}: errore {e}")
             continue
-
     return results
 
 # ======================================
@@ -150,7 +159,6 @@ if uploaded_file:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(tmpdir)
 
-        # Trova tutte le cartelle paziente nello ZIP
         patients = [
             os.path.join(root, d)
             for root, dirs, _ in os.walk(tmpdir)
@@ -162,7 +170,6 @@ if uploaded_file:
             st.stop()
 
         st.write(f"Trovati {len(patients)} pazienti")
-
         all_results = []
         progress = st.progress(0)
 
@@ -171,7 +178,6 @@ if uploaded_file:
             progress.progress(int((i + 1) / len(patients) * 100))
 
         df = pd.DataFrame(all_results)
-
         if len(df) == 0:
             st.error("Nessun risultato trovato.")
         else:
@@ -179,9 +185,4 @@ if uploaded_file:
             df = df.sort_values(by=["Patient", "ROI_Normalized"])
             st.dataframe(df)
             csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "Download CSV",
-                csv,
-                "HU_results.csv",
-                "text/csv"
-            )
+            st.download_button("Download CSV", csv, "HU_results.csv", "text/csv")
