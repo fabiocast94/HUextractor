@@ -1,12 +1,21 @@
 import streamlit as st
+
+# 🔹 Controllo iniziale OpenCV e rt_utils
+try:
+    import cv2
+    from rt_utils import RTStructBuilder
+except ImportError as e:
+    st.error(f"Errore import: {e}. Assicurati di avere Python 3.11 e opencv-python installato.")
+    st.stop()
+
 import zipfile
 import os
 import numpy as np
 import pydicom
-from rt_utils import RTStructBuilder
 import tempfile
 from scipy.ndimage import zoom
 
+# Config pagina
 st.set_page_config(page_title="Analisi HU CT+RTSTRUCT", layout="wide")
 st.title("Analisi HU dalle CT e RTSTRUCT")
 
@@ -34,7 +43,7 @@ if uploaded_ct and uploaded_rt:
             else:
                 # leggi volume CT
                 ct_slices = [pydicom.dcmread(f) for f in ct_files]
-                ct_slices.sort(key=lambda x: float(x.ImagePositionPatient[2]))
+                ct_slices.sort(key=lambda x: float(getattr(x, "ImagePositionPatient", [0,0,0])[2]))
                 ct_volume = np.stack([s.pixel_array * s.RescaleSlope + s.RescaleIntercept for s in ct_slices])
                 
                 # salva RTSTRUCT temporaneo
@@ -58,7 +67,7 @@ if uploaded_ct and uploaded_rt:
                     
                     if roi_selected:
                         results = []
-                        # calcolo fattori di resample una sola volta usando la prima ROI
+                        # calcolo fattori di resample usando la prima ROI
                         sample_mask = rtstruct.get_roi_mask_by_name(roi_selected[0])
                         factors = (
                             ct_volume.shape[0] / sample_mask.shape[0],
