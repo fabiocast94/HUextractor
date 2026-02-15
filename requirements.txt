@@ -1,6 +1,6 @@
-streamlit
-numpy
-pandas
-pydicom
-rt-utils
-opencv-python-headless
+streamlit==1.32.2
+numpy==1.26.4
+pandas==2.2.1
+pydicom==2.4.4
+rt-utils==1.2.7
+opencv-python-headless==4.9.0.80
