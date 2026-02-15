@@ -16,12 +16,12 @@ st.set_page_config(page_title="Radiomics ROI Analyzer", layout="wide")
 st.title("🧠 Radiomics ROI Analyzer (ZIP Edition)")
 
 st.markdown("""
-Upload uno **ZIP** contenente CT DICOM + RTSTRUCT.
-L'app calcola Mean e STD HU per ROI selezionate.
+Upload uno ZIP contenente CT DICOM e RTSTRUCT.
+Analisi Mean e STD HU per ROI selezionate.
 """)
 
 # =====================================================
-# CACHE CT LOADING (performance boost)
+# CACHE CT LOADING
 # =====================================================
 
 @st.cache_data(show_spinner=False)
@@ -39,7 +39,7 @@ def load_ct_series(files):
     spacing = (
         float(slices[0].PixelSpacing[0]),
         float(slices[0].PixelSpacing[1]),
-        abs(z_positions[1] - z_positions[0]) if len(z_positions) > 1 else 1.0
+        abs(z_positions[1]-z_positions[0]) if len(z_positions) > 1 else 1.0
     )
 
     origin = np.array(slices[0].ImagePositionPatient)
@@ -128,11 +128,10 @@ if uploaded_zip:
     with open(zip_path, "wb") as f:
         f.write(uploaded_zip.getbuffer())
 
-    # Extract ZIP
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(temp_dir)
 
-    st.success("ZIP extracted successfully ✔")
+    st.success("ZIP extracted ✔")
 
     # =================================================
     # SCAN DICOM FILES
@@ -181,7 +180,7 @@ if uploaded_zip:
     roi_names = get_roi_names(rt0)
 
     selected_rois = st.multiselect(
-        "Select ROI to analyze",
+        "Select ROI",
         roi_names,
         default=roi_names
     )
@@ -204,6 +203,8 @@ if uploaded_zip:
 
             patient_id = getattr(slices[0], "PatientID", "Unknown")
 
+            dataset_id = f"{patient_id}_{uid[:8]}"
+
             for roi in selected_rois:
 
                 mask = contour_to_mask(
@@ -221,6 +222,7 @@ if uploaded_zip:
                     continue
 
                 results.append({
+                    "DatasetID": dataset_id,
                     "PatientID": patient_id,
                     "SeriesUID": uid,
                     "ROI": roi,
@@ -235,11 +237,15 @@ if uploaded_zip:
 
         st.subheader("📊 Results")
 
-        for pid in df.PatientID.unique():
-            st.markdown(f"### 👤 Patient {pid}")
-            st.dataframe(df[df.PatientID == pid],
-                         use_container_width=True)
+        # ---------- FIX PATIENT DISPLAY ----------
+        for dsid in df.DatasetID.unique():
 
+            sub = df[df.DatasetID == dsid]
+
+            st.markdown(f"### 👤 {dsid}")
+            st.dataframe(sub, use_container_width=True)
+
+        # ---------- DOWNLOAD ----------
         st.download_button(
             "⬇ Download CSV",
             df.to_csv(index=False),
