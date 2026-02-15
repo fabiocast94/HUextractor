@@ -1,16 +1,27 @@
 import streamlit as st
 import os
 import tempfile
+import zipfile
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import pydicom
 from skimage.draw import polygon
 
-st.set_page_config(layout="wide")
-st.title("🧠 Production Radiomics ROI Analyzer")
+# =====================================================
+# CONFIG
+# =====================================================
+
+st.set_page_config(page_title="Radiomics ROI Analyzer", layout="wide")
+st.title("🧠 Radiomics ROI Analyzer (ZIP Edition)")
+
+st.markdown("""
+Upload uno **ZIP** contenente CT DICOM + RTSTRUCT.
+L'app calcola Mean e STD HU per ROI selezionate.
+""")
 
 # =====================================================
-# CACHE (enorme boost performance)
+# CACHE CT LOADING (performance boost)
 # =====================================================
 
 @st.cache_data(show_spinner=False)
@@ -28,7 +39,7 @@ def load_ct_series(files):
     spacing = (
         float(slices[0].PixelSpacing[0]),
         float(slices[0].PixelSpacing[1]),
-        abs(z_positions[1]-z_positions[0])
+        abs(z_positions[1] - z_positions[0]) if len(z_positions) > 1 else 1.0
     )
 
     origin = np.array(slices[0].ImagePositionPatient)
@@ -37,23 +48,18 @@ def load_ct_series(files):
 
 
 # =====================================================
-# MATCH RTSTRUCT ↔ CT (PRO STYLE)
+# RTSTRUCT HELPERS
 # =====================================================
 
 def get_referenced_series_uid(rt):
-
     try:
-        return rt.ReferencedFrameOfReferenceSequence[0]\
-            .RTReferencedStudySequence[0]\
-            .RTReferencedSeriesSequence[0]\
+        return rt.ReferencedFrameOfReferenceSequence[0] \
+            .RTReferencedStudySequence[0] \
+            .RTReferencedSeriesSequence[0] \
             .SeriesInstanceUID
     except:
         return None
 
-
-# =====================================================
-# ROI helpers
-# =====================================================
 
 def get_roi_names(rt):
     return [r.ROIName for r in rt.StructureSetROISequence]
@@ -67,10 +73,10 @@ def get_roi_number(rt, roi_name):
 
 
 # =====================================================
-# CONTOUR → MASK (research-style)
+# CONTOUR -> MASK
 # =====================================================
 
-def contour_to_mask(rt, roi_name, volume_shape, slices,
+def contour_to_mask(rt, roi_name, volume_shape,
                     z_positions, spacing, origin):
 
     mask = np.zeros(volume_shape, dtype=bool)
@@ -91,13 +97,13 @@ def contour_to_mask(rt, roi_name, volume_shape, slices,
 
     for contour in roi_contours.ContourSequence:
 
-        pts = np.array(contour.ContourData).reshape(-1,3)
+        pts = np.array(contour.ContourData).reshape(-1, 3)
 
-        z = pts[0,2]
+        z = pts[0, 2]
         slice_idx = np.argmin(np.abs(z_positions - z))
 
-        rows = (pts[:,1] - origin[1]) / row_spacing
-        cols = (pts[:,0] - origin[0]) / col_spacing
+        rows = (pts[:, 1] - origin[1]) / row_spacing
+        cols = (pts[:, 0] - origin[0]) / col_spacing
 
         rr, cc = polygon(rows, cols, shape=volume_shape[:2])
         mask[rr, cc, slice_idx] = True
@@ -106,62 +112,76 @@ def contour_to_mask(rt, roi_name, volume_shape, slices,
 
 
 # =====================================================
-# Upload section
+# ZIP UPLOAD
 # =====================================================
 
-uploaded_ct = st.file_uploader(
-    "Upload CT DICOM (multi patient)",
-    accept_multiple_files=True,
-    type=["dcm"]
+uploaded_zip = st.file_uploader(
+    "📦 Upload ZIP (CT + RTSTRUCT)",
+    type=["zip"]
 )
 
-uploaded_rt = st.file_uploader(
-    "Upload RTSTRUCT",
-    accept_multiple_files=True,
-    type=["dcm"]
-)
-
-if uploaded_ct and uploaded_rt:
+if uploaded_zip:
 
     temp_dir = tempfile.mkdtemp()
+    zip_path = os.path.join(temp_dir, "dataset.zip")
 
-    # ---------- SAVE FILES ----------
+    with open(zip_path, "wb") as f:
+        f.write(uploaded_zip.getbuffer())
+
+    # Extract ZIP
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(temp_dir)
+
+    st.success("ZIP extracted successfully ✔")
+
+    # =================================================
+    # SCAN DICOM FILES
+    # =================================================
+
     ct_map = {}
     rt_map = {}
 
-    for f in uploaded_ct:
-        path = os.path.join(temp_dir, f.name)
-        with open(path, "wb") as out:
-            out.write(f.getbuffer())
+    all_files = list(Path(temp_dir).rglob("*"))
+    dicom_files = [f for f in all_files if f.is_file()]
 
-        ds = pydicom.dcmread(path, stop_before_pixels=True)
-        uid = ds.SeriesInstanceUID
-        ct_map.setdefault(uid, []).append(path)
+    progress = st.progress(0)
 
-    for f in uploaded_rt:
-        path = os.path.join(temp_dir, f.name)
-        with open(path, "wb") as out:
-            out.write(f.getbuffer())
+    for i, file in enumerate(dicom_files):
 
-        rt = pydicom.dcmread(path, stop_before_pixels=True)
-        uid = get_referenced_series_uid(rt)
-        if uid:
-            rt_map[uid] = path
+        try:
+            ds = pydicom.dcmread(str(file), stop_before_pixels=True)
+
+            if ds.Modality == "CT":
+                uid = ds.SeriesInstanceUID
+                ct_map.setdefault(uid, []).append(str(file))
+
+            elif ds.Modality == "RTSTRUCT":
+                uid = get_referenced_series_uid(ds)
+                if uid:
+                    rt_map[uid] = str(file)
+
+        except:
+            pass
+
+        progress.progress((i + 1) / len(dicom_files))
 
     series_ids = list(set(ct_map) & set(rt_map))
 
     if len(series_ids) == 0:
-        st.error("No matching CT / RTSTRUCT series.")
+        st.error("❌ No matching CT / RTSTRUCT found.")
         st.stop()
 
-    st.success(f"{len(series_ids)} matched datasets found")
+    st.success(f"✅ Found {len(series_ids)} matched datasets")
 
-    # ROI selection from first dataset
+    # =================================================
+    # ROI SELECTION
+    # =================================================
+
     rt0 = pydicom.dcmread(rt_map[series_ids[0]])
     roi_names = get_roi_names(rt0)
 
     selected_rois = st.multiselect(
-        "Select ROI for analysis",
+        "Select ROI to analyze",
         roi_names,
         default=roi_names
     )
@@ -170,9 +190,9 @@ if uploaded_ct and uploaded_rt:
     # ANALYSIS
     # =================================================
 
-    if st.button("▶ Run analysis"):
+    if st.button("▶ Run Analysis"):
 
-        all_results = []
+        results = []
         progress = st.progress(0)
 
         for i, uid in enumerate(series_ids):
@@ -182,7 +202,7 @@ if uploaded_ct and uploaded_rt:
 
             rt = pydicom.dcmread(rt_map[uid])
 
-            patient_id = slices[0].PatientID
+            patient_id = getattr(slices[0], "PatientID", "Unknown")
 
             for roi in selected_rois:
 
@@ -190,7 +210,6 @@ if uploaded_ct and uploaded_rt:
                     rt,
                     roi,
                     volume.shape,
-                    slices,
                     z_positions,
                     spacing,
                     origin
@@ -201,27 +220,29 @@ if uploaded_ct and uploaded_rt:
                 if len(vals) == 0:
                     continue
 
-                all_results.append({
+                results.append({
                     "PatientID": patient_id,
                     "SeriesUID": uid,
                     "ROI": roi,
-                    "Mean": np.mean(vals),
-                    "STD": np.std(vals),
-                    "Voxels": len(vals)
+                    "Mean": float(np.mean(vals)),
+                    "STD": float(np.std(vals)),
+                    "N_voxels": int(len(vals))
                 })
 
-            progress.progress((i+1)/len(series_ids))
+            progress.progress((i + 1) / len(series_ids))
 
-        df = pd.DataFrame(all_results)
+        df = pd.DataFrame(results)
 
         st.subheader("📊 Results")
 
         for pid in df.PatientID.unique():
             st.markdown(f"### 👤 Patient {pid}")
-            st.dataframe(df[df.PatientID == pid])
+            st.dataframe(df[df.PatientID == pid],
+                         use_container_width=True)
 
         st.download_button(
-            "Download CSV",
+            "⬇ Download CSV",
             df.to_csv(index=False),
-            "radiomics_results.csv"
+            "radiomics_results.csv",
+            "text/csv"
         )
