@@ -13,11 +13,15 @@ from skimage.draw import polygon
 # =====================================================
 
 st.set_page_config(page_title="Radiomics ROI Analyzer", layout="wide")
-st.title("🧠 Radiomics ROI Analyzer (ZIP Edition)")
+st.title("🧠 Radiomics ROI Analyzer")
 
 st.markdown("""
-Upload uno ZIP contenente CT DICOM e RTSTRUCT.
-Analisi Mean e STD HU per ROI selezionate.
+Puoi caricare:
+
+- 📦 **un solo ZIP** con tutti i pazienti
+- 📦📦 **più ZIP**, uno per paziente
+
+L'app trova automaticamente CT + RTSTRUCT e calcola Mean/STD HU.
 """)
 
 # =====================================================
@@ -32,9 +36,9 @@ def load_ct_series(files):
 
     volume = np.stack([s.pixel_array for s in slices], axis=-1)
 
-    z_positions = np.array([
-        float(s.ImagePositionPatient[2]) for s in slices
-    ])
+    z_positions = np.array(
+        [float(s.ImagePositionPatient[2]) for s in slices]
+    )
 
     spacing = (
         float(slices[0].PixelSpacing[0]),
@@ -112,26 +116,36 @@ def contour_to_mask(rt, roi_name, volume_shape,
 
 
 # =====================================================
-# ZIP UPLOAD
+# MULTI ZIP UPLOAD  ⭐
 # =====================================================
 
-uploaded_zip = st.file_uploader(
-    "📦 Upload ZIP (CT + RTSTRUCT)",
-    type=["zip"]
+uploaded_zips = st.file_uploader(
+    "📦 Upload uno o più ZIP",
+    type=["zip"],
+    accept_multiple_files=True
 )
 
-if uploaded_zip:
+if uploaded_zips:
 
     temp_dir = tempfile.mkdtemp()
-    zip_path = os.path.join(temp_dir, "dataset.zip")
 
-    with open(zip_path, "wb") as f:
-        f.write(uploaded_zip.getbuffer())
+    st.info(f"Estrazione di {len(uploaded_zips)} ZIP...")
 
-    with zipfile.ZipFile(zip_path, "r") as zip_ref:
-        zip_ref.extractall(temp_dir)
+    # -------- Extract all ZIPs ----------
+    for i, zip_file in enumerate(uploaded_zips):
 
-    st.success("ZIP extracted ✔")
+        zip_path = os.path.join(temp_dir, f"dataset_{i}.zip")
+
+        with open(zip_path, "wb") as f:
+            f.write(zip_file.getbuffer())
+
+        extract_dir = os.path.join(temp_dir, f"zip_{i}")
+        os.makedirs(extract_dir, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(extract_dir)
+
+    st.success("ZIP estratti ✔")
 
     # =================================================
     # SCAN DICOM FILES
@@ -167,10 +181,10 @@ if uploaded_zip:
     series_ids = list(set(ct_map) & set(rt_map))
 
     if len(series_ids) == 0:
-        st.error("❌ No matching CT / RTSTRUCT found.")
+        st.error("❌ Nessun match CT / RTSTRUCT trovato.")
         st.stop()
 
-    st.success(f"✅ Found {len(series_ids)} matched datasets")
+    st.success(f"✅ Dataset trovati: {len(series_ids)}")
 
     # =================================================
     # ROI SELECTION
@@ -180,7 +194,7 @@ if uploaded_zip:
     roi_names = get_roi_names(rt0)
 
     selected_rois = st.multiselect(
-        "Select ROI",
+        "Seleziona ROI",
         roi_names,
         default=roi_names
     )
@@ -202,7 +216,6 @@ if uploaded_zip:
             rt = pydicom.dcmread(rt_map[uid])
 
             patient_id = getattr(slices[0], "PatientID", "Unknown")
-
             dataset_id = f"{patient_id}_{uid[:8]}"
 
             for roi in selected_rois:
@@ -237,15 +250,11 @@ if uploaded_zip:
 
         st.subheader("📊 Results")
 
-        # ---------- FIX PATIENT DISPLAY ----------
         for dsid in df.DatasetID.unique():
-
             sub = df[df.DatasetID == dsid]
-
             st.markdown(f"### 👤 {dsid}")
             st.dataframe(sub, use_container_width=True)
 
-        # ---------- DOWNLOAD ----------
         st.download_button(
             "⬇ Download CSV",
             df.to_csv(index=False),
