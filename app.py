@@ -6,71 +6,95 @@ import pandas as pd
 import pydicom
 from skimage.draw import polygon
 
-st.set_page_config(page_title="ROI HU Analyzer", layout="wide")
-st.title("🧠 Radiomics ROI Analyzer (Stable Version)")
+st.set_page_config(layout="wide")
+st.title("🧠 Production Radiomics ROI Analyzer")
 
 # =====================================================
-# Utility functions
+# CACHE (enorme boost performance)
 # =====================================================
 
+@st.cache_data(show_spinner=False)
 def load_ct_series(files):
+
     slices = [pydicom.dcmread(f) for f in files]
     slices.sort(key=lambda x: float(x.ImagePositionPatient[2]))
 
     volume = np.stack([s.pixel_array for s in slices], axis=-1)
 
+    z_positions = np.array([
+        float(s.ImagePositionPatient[2]) for s in slices
+    ])
+
     spacing = (
         float(slices[0].PixelSpacing[0]),
         float(slices[0].PixelSpacing[1]),
-        float(slices[0].SliceThickness),
+        abs(z_positions[1]-z_positions[0])
     )
 
     origin = np.array(slices[0].ImagePositionPatient)
 
-    return volume, slices, spacing, origin
+    return volume, slices, z_positions, spacing, origin
 
 
-def patient_roi_names(rt):
-    names = []
-    for roi in rt.StructureSetROISequence:
-        names.append(roi.ROIName)
-    return names
+# =====================================================
+# MATCH RTSTRUCT ↔ CT (PRO STYLE)
+# =====================================================
+
+def get_referenced_series_uid(rt):
+
+    try:
+        return rt.ReferencedFrameOfReferenceSequence[0]\
+            .RTReferencedStudySequence[0]\
+            .RTReferencedSeriesSequence[0]\
+            .SeriesInstanceUID
+    except:
+        return None
 
 
-def build_mask_from_contours(rt, roi_name, volume_shape, slices):
+# =====================================================
+# ROI helpers
+# =====================================================
+
+def get_roi_names(rt):
+    return [r.ROIName for r in rt.StructureSetROISequence]
+
+
+def get_roi_number(rt, roi_name):
+    for r in rt.StructureSetROISequence:
+        if r.ROIName == roi_name:
+            return r.ROINumber
+    return None
+
+
+# =====================================================
+# CONTOUR → MASK (research-style)
+# =====================================================
+
+def contour_to_mask(rt, roi_name, volume_shape, slices,
+                    z_positions, spacing, origin):
 
     mask = np.zeros(volume_shape, dtype=bool)
 
-    # map roi number
-    roi_number = None
-    for roi in rt.StructureSetROISequence:
-        if roi.ROIName == roi_name:
-            roi_number = roi.ROINumber
-
+    roi_number = get_roi_number(rt, roi_name)
     if roi_number is None:
         return mask
 
-    contours = None
-    for c in rt.ROIContourSequence:
-        if c.ReferencedROINumber == roi_number:
-            contours = c
+    roi_contours = None
+    for rc in rt.ROIContourSequence:
+        if rc.ReferencedROINumber == roi_number:
+            roi_contours = rc
 
-    if contours is None:
+    if roi_contours is None:
         return mask
 
-    z_positions = [float(s.ImagePositionPatient[2]) for s in slices]
+    row_spacing, col_spacing, _ = spacing
 
-    for contour in contours.ContourSequence:
+    for contour in roi_contours.ContourSequence:
 
         pts = np.array(contour.ContourData).reshape(-1,3)
 
         z = pts[0,2]
-        slice_idx = np.argmin(np.abs(np.array(z_positions)-z))
-
-        row_spacing = float(slices[0].PixelSpacing[0])
-        col_spacing = float(slices[0].PixelSpacing[1])
-
-        origin = np.array(slices[0].ImagePositionPatient)
+        slice_idx = np.argmin(np.abs(z_positions - z))
 
         rows = (pts[:,1] - origin[1]) / row_spacing
         cols = (pts[:,0] - origin[0]) / col_spacing
@@ -82,11 +106,11 @@ def build_mask_from_contours(rt, roi_name, volume_shape, slices):
 
 
 # =====================================================
-# Upload
+# Upload section
 # =====================================================
 
 uploaded_ct = st.file_uploader(
-    "Upload CT DICOM (multi-patient)",
+    "Upload CT DICOM (multi patient)",
     accept_multiple_files=True,
     type=["dcm"]
 )
@@ -101,64 +125,75 @@ if uploaded_ct and uploaded_rt:
 
     temp_dir = tempfile.mkdtemp()
 
-    ct_by_patient = {}
-    rt_by_patient = {}
+    # ---------- SAVE FILES ----------
+    ct_map = {}
+    rt_map = {}
 
-    # ---- CT ----
     for f in uploaded_ct:
         path = os.path.join(temp_dir, f.name)
         with open(path, "wb") as out:
             out.write(f.getbuffer())
 
         ds = pydicom.dcmread(path, stop_before_pixels=True)
-        pid = ds.PatientID
+        uid = ds.SeriesInstanceUID
+        ct_map.setdefault(uid, []).append(path)
 
-        ct_by_patient.setdefault(pid, []).append(path)
-
-    # ---- RT ----
     for f in uploaded_rt:
         path = os.path.join(temp_dir, f.name)
         with open(path, "wb") as out:
             out.write(f.getbuffer())
 
-        ds = pydicom.dcmread(path, stop_before_pixels=True)
-        rt_by_patient[ds.PatientID] = path
+        rt = pydicom.dcmread(path, stop_before_pixels=True)
+        uid = get_referenced_series_uid(rt)
+        if uid:
+            rt_map[uid] = path
 
-    patients = list(set(ct_by_patient) & set(rt_by_patient))
+    series_ids = list(set(ct_map) & set(rt_map))
 
-    if not patients:
-        st.error("No matching patients.")
+    if len(series_ids) == 0:
+        st.error("No matching CT / RTSTRUCT series.")
         st.stop()
 
-    st.success(f"{len(patients)} patients detected")
+    st.success(f"{len(series_ids)} matched datasets found")
 
-    # ROI selection (first patient)
-    rt_sample = pydicom.dcmread(rt_by_patient[patients[0]])
-    roi_names = patient_roi_names(rt_sample)
+    # ROI selection from first dataset
+    rt0 = pydicom.dcmread(rt_map[series_ids[0]])
+    roi_names = get_roi_names(rt0)
 
     selected_rois = st.multiselect(
-        "Select ROI",
+        "Select ROI for analysis",
         roi_names,
         default=roi_names
     )
 
-    if st.button("▶ Start analysis"):
+    # =================================================
+    # ANALYSIS
+    # =================================================
 
-        results = []
+    if st.button("▶ Run analysis"):
+
+        all_results = []
         progress = st.progress(0)
 
-        for i, pid in enumerate(patients):
+        for i, uid in enumerate(series_ids):
 
-            volume, slices, _, _ = load_ct_series(ct_by_patient[pid])
-            rt = pydicom.dcmread(rt_by_patient[pid])
+            volume, slices, z_positions, spacing, origin = \
+                load_ct_series(ct_map[uid])
+
+            rt = pydicom.dcmread(rt_map[uid])
+
+            patient_id = slices[0].PatientID
 
             for roi in selected_rois:
 
-                mask = build_mask_from_contours(
+                mask = contour_to_mask(
                     rt,
                     roi,
                     volume.shape,
-                    slices
+                    slices,
+                    z_positions,
+                    spacing,
+                    origin
                 )
 
                 vals = volume[mask]
@@ -166,26 +201,27 @@ if uploaded_ct and uploaded_rt:
                 if len(vals) == 0:
                     continue
 
-                results.append({
-                    "PatientID": pid,
+                all_results.append({
+                    "PatientID": patient_id,
+                    "SeriesUID": uid,
                     "ROI": roi,
                     "Mean": np.mean(vals),
                     "STD": np.std(vals),
-                    "N_voxels": len(vals)
+                    "Voxels": len(vals)
                 })
 
-            progress.progress((i+1)/len(patients))
+            progress.progress((i+1)/len(series_ids))
 
-        df = pd.DataFrame(results)
+        df = pd.DataFrame(all_results)
 
-        st.subheader("Results")
+        st.subheader("📊 Results")
 
         for pid in df.PatientID.unique():
-            st.markdown(f"### Patient {pid}")
-            st.dataframe(df[df.PatientID==pid])
+            st.markdown(f"### 👤 Patient {pid}")
+            st.dataframe(df[df.PatientID == pid])
 
         st.download_button(
             "Download CSV",
             df.to_csv(index=False),
-            "roi_results.csv"
+            "radiomics_results.csv"
         )
