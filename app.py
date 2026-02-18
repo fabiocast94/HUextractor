@@ -24,21 +24,47 @@ L'app calcola Mean, STD, Min e Max HU per le ROI selezionate.
 """)
 
 # =====================================================
-# CACHE CT LOADING
+# CACHE CT LOADING (HU FIXED)
 # =====================================================
 @st.cache_data(show_spinner=False)
 def load_ct_series(files):
+
     slices = [pydicom.dcmread(f) for f in files]
+
+    # Ordina per posizione Z reale
     slices.sort(key=lambda x: float(x.ImagePositionPatient[2]))
-    volume = np.stack([s.pixel_array for s in slices], axis=-1)
-    z_positions = np.array([float(s.ImagePositionPatient[2]) for s in slices])
+
+    volume_list = []
+    z_positions = []
+
+    for s in slices:
+
+        # Converti in int16 per sicurezza
+        img = s.pixel_array.astype(np.int16)
+
+        # Recupera slope/intercept
+        slope = float(getattr(s, "RescaleSlope", 1))
+        intercept = float(getattr(s, "RescaleIntercept", 0))
+
+        # 🔥 Conversione in HU
+        img = img * slope + intercept
+
+        volume_list.append(img)
+        z_positions.append(float(s.ImagePositionPatient[2]))
+
+    volume = np.stack(volume_list, axis=-1)
+    z_positions = np.array(z_positions)
+
     spacing = (
         float(slices[0].PixelSpacing[0]),
         float(slices[0].PixelSpacing[1]),
-        abs(z_positions[1]-z_positions[0]) if len(z_positions) > 1 else 1.0
+        abs(z_positions[1] - z_positions[0]) if len(z_positions) > 1 else 1.0
     )
+
     origin = np.array(slices[0].ImagePositionPatient)
+
     return volume, slices, z_positions, spacing, origin
+
 
 # =====================================================
 # RTSTRUCT HELPERS
@@ -52,8 +78,10 @@ def get_referenced_series_uid(rt):
     except:
         return None
 
+
 def get_roi_names(rt):
     return [r.ROIName for r in rt.StructureSetROISequence]
+
 
 def get_roi_number(rt, roi_name):
     for r in rt.StructureSetROISequence:
@@ -61,31 +89,44 @@ def get_roi_number(rt, roi_name):
             return r.ROINumber
     return None
 
+
 # =====================================================
 # CONTOUR -> MASK
 # =====================================================
 def contour_to_mask(rt, roi_name, volume_shape,
                     z_positions, spacing, origin):
+
     mask = np.zeros(volume_shape, dtype=bool)
     roi_number = get_roi_number(rt, roi_name)
+
     if roi_number is None:
         return mask
+
     roi_contours = None
     for rc in rt.ROIContourSequence:
         if rc.ReferencedROINumber == roi_number:
             roi_contours = rc
+
     if roi_contours is None:
         return mask
+
     row_spacing, col_spacing, _ = spacing
+
     for contour in roi_contours.ContourSequence:
+
         pts = np.array(contour.ContourData).reshape(-1, 3)
+
         z = pts[0, 2]
         slice_idx = np.argmin(np.abs(z_positions - z))
+
         rows = (pts[:, 1] - origin[1]) / row_spacing
         cols = (pts[:, 0] - origin[0]) / col_spacing
+
         rr, cc = polygon(rows, cols, shape=volume_shape[:2])
         mask[rr, cc, slice_idx] = True
+
     return mask
+
 
 # =====================================================
 # MULTI ZIP UPLOAD
@@ -125,30 +166,38 @@ if uploaded_zips:
     for i, file in enumerate(dicom_files):
         try:
             ds = pydicom.dcmread(str(file), stop_before_pixels=True)
+
             if ds.Modality == "CT":
                 uid = ds.SeriesInstanceUID
                 ct_map.setdefault(uid, []).append(str(file))
+
             elif ds.Modality == "RTSTRUCT":
                 uid = get_referenced_series_uid(ds)
                 if uid:
                     rt_map[uid] = str(file)
+
         except:
             pass
+
         progress.progress((i + 1) / len(dicom_files))
 
     series_ids = list(set(ct_map) & set(rt_map))
+
     if len(series_ids) == 0:
         st.error("❌ Nessun match CT / RTSTRUCT trovato.")
         st.stop()
+
     st.success(f"✅ Dataset trovati: {len(series_ids)}")
 
     # =================================================
     # ROI SELECTION MULTI-PATIENT
     # =================================================
     all_roi_names = set()
+
     for uid in series_ids:
         rt = pydicom.dcmread(rt_map[uid])
         all_roi_names.update(get_roi_names(rt))
+
     all_roi_names = sorted(list(all_roi_names))
 
     selected_rois = st.multiselect(
@@ -169,6 +218,12 @@ if uploaded_zips:
 
             volume, slices, z_positions, spacing, origin = \
                 load_ct_series(ct_map[uid])
+
+            # DEBUG HU RANGE (puoi commentarlo dopo test)
+            st.write(f"HU global range - Series {uid}:",
+                     np.min(volume),
+                     np.max(volume))
+
             rt = pydicom.dcmread(rt_map[uid])
             patient_id = getattr(slices[0], "PatientID", "Unknown")
 
@@ -204,6 +259,7 @@ if uploaded_zips:
         df = pd.DataFrame(results)
 
         st.subheader("📊 Results")
+
         for pid in df.PatientID.unique():
             sub = df[df.PatientID == pid]
             st.markdown(f"### 👤 Patient {pid}")
